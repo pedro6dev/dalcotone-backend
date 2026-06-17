@@ -1,0 +1,6 @@
+{
+  "name": "dalcotone-backend",
+  "version": "1.0.0",
+  "description": "Backend para consentimento de WhatsApp via Klaviyo",
+  "private": true
+}
