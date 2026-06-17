@@ -4,7 +4,6 @@
 const KLAVIYO_PRIVATE_KEY = process.env.KLAVIYO_PRIVATE_KEY;
 const KLAVIYO_LIST_ID = "R8VLFs"; // WhatsApp Subscribers
 
-// Domínios autorizados a chamar este backend
 const ALLOWED_ORIGINS = [
   "https://seguro.dalcotone.com.br",
   "https://dalcotone.com.br",
@@ -18,21 +17,16 @@ function setCors(res, origin) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
 
-// Normaliza telefone para o formato E.164 (+55...)
 function normalizePhone(raw) {
   if (!raw) return "";
   var digits = String(raw).replace(/\D/g, "");
-  // Remove zeros à esquerda
   digits = digits.replace(/^0+/, "");
-  // Se já começa com 55 e tem 12-13 dígitos, assume que tem código do país
   if (digits.length >= 12 && digits.indexOf("55") === 0) {
     return "+" + digits;
   }
-  // Se tem 10 ou 11 dígitos (DDD + número), adiciona +55
   if (digits.length === 10 || digits.length === 11) {
     return "+55" + digits;
   }
-  // Fallback: adiciona +55 mesmo assim
   return "+55" + digits;
 }
 
@@ -65,8 +59,25 @@ module.exports = async function handler(req, res) {
       return;
     }
 
-    // API v3 do Klaviyo - Subscribe Profiles (bulk subscribe job)
-    // Inscreve o perfil no canal WhatsApp da lista WhatsApp Subscribers
+    var headers = {
+      "Authorization": "Klaviyo-API-Key " + KLAVIYO_PRIVATE_KEY,
+      "Content-Type": "application/json",
+      "revision": "2024-10-15"
+    };
+
+    // ETAPA 1: Inscrever no canal WhatsApp (sem properties)
+    var profileAttrs = {
+      phone_number: phone,
+      subscriptions: {
+        whatsapp: {
+          marketing: { consent: "SUBSCRIBED" }
+        }
+      }
+    };
+    if (email) {
+      profileAttrs.email = email;
+    }
+
     var subscribePayload = {
       data: {
         type: "profile-subscription-bulk-create-job",
@@ -75,23 +86,7 @@ module.exports = async function handler(req, res) {
             data: [
               {
                 type: "profile",
-                attributes: {
-                  email: email || undefined,
-                  phone_number: phone,
-                  subscriptions: {
-                    whatsapp: {
-                      marketing: {
-                        consent: "SUBSCRIBED"
-                      }
-                    }
-                  },
-                  properties: {
-                    whatsapp_consent: true,
-                    whatsapp_consent_date: new Date().toISOString(),
-                    whatsapp_consent_source: "pagina_obrigado_yampi",
-                    whatsapp_consent_order_id: String(orderId)
-                  }
-                }
+                attributes: profileAttrs
               }
             ]
           }
@@ -104,22 +99,44 @@ module.exports = async function handler(req, res) {
       }
     };
 
-    var resp = await fetch("https://a.klaviyo.com/api/profile-subscription-bulk-create-jobs/", {
+    var subResp = await fetch("https://a.klaviyo.com/api/profile-subscription-bulk-create-jobs/", {
       method: "POST",
-      headers: {
-        "Authorization": "Klaviyo-API-Key " + KLAVIYO_PRIVATE_KEY,
-        "Content-Type": "application/json",
-        "revision": "2024-10-15"
-      },
+      headers: headers,
       body: JSON.stringify(subscribePayload)
     });
 
-    if (resp.status === 202 || resp.ok) {
-      res.status(200).json({ success: true });
-    } else {
-      var errText = await resp.text();
-      res.status(resp.status).json({ error: "Klaviyo error", detail: errText });
+    if (!(subResp.status === 202 || subResp.ok)) {
+      var subErr = await subResp.text();
+      res.status(subResp.status).json({ error: "Subscribe error", detail: subErr });
+      return;
     }
+
+    // ETAPA 2: Salvar propriedades personalizadas via upsert de perfil
+    var profilePayload = {
+      data: {
+        type: "profile",
+        attributes: {
+          phone_number: phone,
+          properties: {
+            whatsapp_consent: true,
+            whatsapp_consent_date: new Date().toISOString(),
+            whatsapp_consent_source: "pagina_obrigado_yampi",
+            whatsapp_consent_order_id: String(orderId)
+          }
+        }
+      }
+    };
+    if (email) {
+      profilePayload.data.attributes.email = email;
+    }
+
+    await fetch("https://a.klaviyo.com/api/profile-import/", {
+      method: "POST",
+      headers: headers,
+      body: JSON.stringify(profilePayload)
+    });
+
+    res.status(200).json({ success: true });
   } catch (err) {
     res.status(500).json({ error: "Server error", detail: String(err) });
   }
